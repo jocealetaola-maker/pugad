@@ -2174,12 +2174,32 @@ function turnInto(b, type) {
   if (typeof type === 'string' && type.startsWith('db:')) { if (arr(b.children).length) { const L0 = locate(b.id); if (L0) L0.list.splice(L0.i + 1, 0, ...b.children); delete b.children; } b.type = 'db'; b.data = dbTemplate(type.slice(3)); delete b.text; delete b.checked; delete b.color; return; }
   if (!NEST.includes(type) && arr(b.children).length) { const L = locate(b.id); if (L) L.list.splice(L.i + 1, 0, ...b.children); delete b.children; }
   const wasText = TEXTLIKE.includes(b.type);
+  const isHeader = ['h1', 'h2', 'h3'].includes(b.type);
   if (TEXTLIKE.includes(type)) {
     if (!wasText) b.text = '';
     b.type = type; if (type !== 'todo') delete b.checked;
     if (type === 'code') b.text = plain(b.text);
     if (type === 'callout' && !b.icon) b.icon = '💡';
     delete b.data;
+    // Special: turning a header into a toggle collects following blocks until the next header
+    if (type === 'toggle' && isHeader) {
+      const L = locate(b.id);
+      if (L && L.list) {
+        const kids = [];
+        let i = L.i + 1;
+        while (i < L.list.length) {
+          const nxt = L.list[i];
+          if (['h1', 'h2', 'h3'].includes(nxt.type)) break;
+          kids.push(nxt);
+          i++;
+        }
+        if (kids.length) {
+          L.list.splice(L.i + 1, kids.length);
+          b.children = kids;
+          b.open = true;
+        }
+      }
+    }
   } else {
     b.type = type; b.data = defData(type); delete b.text; delete b.checked;
   }
@@ -2345,6 +2365,10 @@ pageEl.addEventListener('keydown', e => {
   }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'e') { e.preventDefault(); wrapSel('code'); }
   if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'h') { e.preventDefault(); wrapSel('mark'); }
+  // Formatting shortcuts
+  if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'b') { e.preventDefault(); document.execCommand('bold'); const c2 = edCtx(e.target); if (c2) syncEd(c2); return; }
+  if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'i') { e.preventDefault(); document.execCommand('italic'); const c2 = edCtx(e.target); if (c2) syncEd(c2); return; }
+  if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'u') { e.preventDefault(); document.execCommand('underline'); const c2 = edCtx(e.target); if (c2) syncEd(c2); return; }
 });
 pageEl.addEventListener('paste', e => {
   const c = edCtx(e.target); if (!c) return;
@@ -2353,10 +2377,24 @@ pageEl.addEventListener('paste', e => {
   if (c.b.type === 'code' || c.field === 'body' || !text.includes('\n')) { document.execCommand('insertText', false, text); return; }
   const lines = text.replace(/\r/g, '').split('\n');
   const snap = pushUndo('paste');
-  document.execCommand('insertText', false, lines.shift());
+  // First line into current
+  const first = lines.shift() || '';
+  document.execCommand('insertText', false, first);
   syncEd(c);
   let after = c.b.id;
-  for (const ln of lines) { const nb = { id: uid('b'), type: ['bullet', 'numbered', 'todo'].includes(c.b.type) ? c.b.type : 'text', text: esc(ln) }; insertAfterRaw(after, nb); after = nb.id; }
+  for (const ln of lines) {
+    const trimmed = ln.trim();
+    let type = ['bullet', 'numbered', 'todo'].includes(c.b.type) ? c.b.type : 'text';
+    let txt = ln;
+    // Auto-convert lines starting with - or * (optionally with space) to bullets
+    if (/^\s*[-*]\s+/.test(ln) || /^\s*[-*]\s*$/.test(ln)) {
+      type = 'bullet';
+      txt = ln.replace(/^\s*[-*]\s*/, '');
+    }
+    const nb = { id: uid('b'), type, text: esc(txt) };
+    insertAfterRaw(after, nb);
+    after = nb.id;
+  }
   renderBlocks(); curDirty(); focusBlock(after, 'end');
   if (snap) { lastPaste = { id: S.current.id, at: Date.now() }; histClose(S.current.scope, S.current.id); if (lines.length >= 4) toastUndo(`Pasted ${lines.length + 1} lines`); }
 });
