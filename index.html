@@ -1330,13 +1330,17 @@ textarea.l-field { resize: vertical; line-height: 1.5; }
   <aside id="sidebar" aria-label="Workspace">
     <div class="ws-head">
       <button class="ws-ico" id="wsIcon" aria-label="Change workspace icon"></button>
-      <button class="ws-name" id="wsName" aria-label="Rename workspace"></button>
+      <button class="ws-name" id="wsName" aria-label="Workspaces & team" title="Switch workspace or manage team"></button>
+      <button class="side-btn" id="wsSwitch" aria-label="Switch workspace" title="Switch workspace" style="padding:4px 8px;font-size:13px;gap:6px">
+        <span class="gi">⇄</span><span id="wsSwitchLabel">Switch</span>
+      </button>
       <button class="icon-btn" id="collapseBtn" title="Hide sidebar" aria-label="Hide sidebar">«</button>
     </div>
     <div class="side-actions">
       <button class="side-btn" id="searchBtn"><span class="gi">⌕</span>Search<kbd>Ctrl K</kbd></button>
       <button class="side-btn" id="customizeBtn"><span class="gi">✿</span>Customize</button>
       <button class="side-btn" id="teamBtn"><span class="gi">♡</span>Team &amp; plan</button>
+     <button class="side-btn" id="chatBtn"><span class="gi">💬</span>Chat spaces</button>
       <button class="side-btn" id="newBtn"><span class="gi">＋</span>New page</button>
     </div>
     <div class="side-scroll">
@@ -1821,6 +1825,7 @@ function saveExp() { lsSet('buhat.exp', JSON.stringify([...S.exp])); }
 function renderSidebar() {
   $('#wsIcon').textContent = S.meta.icon || '🐣';
   $('#wsName').textContent = S.meta.name || 'Workspace';
+  const sw = $('#wsSwitchLabel'); if (sw) sw.textContent = (S.meta.name || 'Workspace').slice(0, 12);
   for (const scope of ['shared', 'private']) {
     const nav = scope === 'shared' ? $('#treeShared') : $('#treePrivate');
     nav.replaceChildren();
@@ -1860,6 +1865,7 @@ function pageMenu(anchor, scope, id) {
     { n: 'Open', i: '↗', act: () => openPage(scope, id) },
     { n: 'Add a page inside', i: '+', act: () => newPage(scope, id) },
     { n: 'Duplicate', i: '⧉', act: () => duplicatePage(scope, id) },
+    { n: 'Copy to workspace…', i: '↗', act: () => copyPageToWorkspace(scope, id) },
     { n: 'Move to ' + to, i: to === 'Private' ? '🔒' : '👥', act: () => movePage(scope, id) },
     { n: 'Page history', i: '🕘', act: () => historyModal(scope, id) },
     'sep',
@@ -6563,8 +6569,134 @@ async function teamModal() {
   } }, 'Create')));
   box.append(wsBox);
 }
+
+function quickSwitchWorkspace() {
+  const list = h('div', { style: 'display:grid;gap:4px;min-width:220px' });
+  for (const w of S.wsList || []) {
+    const cur = w.id === W;
+    list.append(h('button', { class: 'side-btn' + (cur ? ' cur' : ''), style: 'width:100%', onclick: () => {
+      if (cur) return closePop();
+      lsSet('buhat.ws', w.id); location.reload();
+    } },
+      h('span', { text: w.icon || '🐣' }),
+      h('span', { text: w.name }),
+      cur ? h('span', { class: 'w-sub', style: 'margin-left:auto', text: 'current' }) : ''));
+  }
+  list.append(h('button', { class: 'side-btn', style: 'margin-top:6px;opacity:.8', onclick: () => { closePop(); teamModal(); } }, 'Manage workspaces…'));
+  openPop($('#wsSwitch'), list);
+}
 function bindBuhat() {
   $('#teamBtn').onclick = teamModal;
+  $('#chatBtn').onclick = openChat;
+  $('#wsName').onclick = teamModal;
+  $('#wsSwitch').onclick = quickSwitchWorkspace;
+}
+
+
+/* ================= Chat spaces (Slack-like) ================= */
+let CHAT = { open: false, channel: null, channels: [], messages: [] };
+
+async function openChat() {
+  CHAT.open = true;
+  await loadChannels();
+  renderChatModal();
+}
+
+async function loadChannels() {
+  const { data, error } = await SB.from('channels').select('id, name, description, is_private, created_by').eq('workspace_id', W).order('name');
+  if (error) { toast("Couldn't load channels: " + error.message); CHAT.channels = []; return; }
+  CHAT.channels = data || [];
+  if (!CHAT.channel && CHAT.channels.length) CHAT.channel = CHAT.channels[0].id;
+}
+
+async function loadMessages(channelId) {
+  if (!channelId) { CHAT.messages = []; return; }
+  const { data, error } = await SB.from('messages').select('id, user_id, content, created_at').eq('channel_id', channelId).order('created_at', { ascending: true }).limit(200);
+  if (error) { toast("Couldn't load messages: " + error.message); CHAT.messages = []; return; }
+  CHAT.messages = data || [];
+}
+
+function renderChatModal() {
+  const body = h('div', { class: 'chat-layout', style: 'display:grid;grid-template-columns:220px 1fr;height:70vh;gap:12px;min-width:640px' });
+  const side = h('div', { class: 'chat-side', style: 'border-right:1px solid var(--line);overflow-y:auto;padding-right:8px' });
+  const main = h('div', { class: 'chat-main', style: 'display:flex;flex-direction:column;min-width:0' });
+
+  // Channel list
+  side.append(h('div', { class: 'side-label', style: 'margin-bottom:6px' }, 'Channels', h('button', { class: 'side-label', onclick: createChannelPrompt, title: 'New channel' }, '+')));
+  if (!CHAT.channels.length) side.append(h('div', { class: 'side-empty', text: 'No channels yet' }));
+  for (const ch of CHAT.channels) {
+    const row = h('button', { class: 'tr' + (ch.id === CHAT.channel ? ' cur' : ''), style: 'width:100%;text-align:left', onclick: () => selectChannel(ch.id) },
+      h('span', { class: 'tr-ico', text: ch.is_private ? '🔒' : '#' }),
+      h('span', { class: 'tr-name', text: ch.name }));
+    side.append(row);
+  }
+
+  // Messages area
+  const msgs = h('div', { id: 'chatMsgs', style: 'flex:1;overflow-y:auto;padding:8px 4px;display:flex;flex-direction:column;gap:8px' });
+  const inputRow = h('div', { style: 'display:flex;gap:8px;margin-top:8px' });
+  const inp = h('input', { class: 'field', placeholder: 'Message…', style: 'flex:1', id: 'chatInput' });
+  const send = h('button', { class: 'btn', onclick: sendMessage }, 'Send');
+  inputRow.append(inp, send);
+  main.append(msgs, inputRow);
+
+  body.append(side, main);
+  openModal('Chat spaces', body, true);
+
+  if (CHAT.channel) selectChannel(CHAT.channel);
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
+}
+
+async function selectChannel(id) {
+  CHAT.channel = id;
+  await loadMessages(id);
+  renderMessages();
+  // re-highlight
+  const modal = $('#modal'); if (modal) {
+    modal.querySelectorAll('.tr').forEach(el => el.classList.remove('cur'));
+    const rows = modal.querySelectorAll('.tr');
+    // crude re-render of side is simpler; for now just update messages
+  }
+}
+
+function renderMessages() {
+  const box = $('#chatMsgs'); if (!box) return;
+  box.replaceChildren();
+  if (!CHAT.messages.length) {
+    box.append(h('div', { class: 'w-sub', style: 'text-align:center;margin-top:40px', text: 'No messages yet. Say hello.' }));
+    return;
+  }
+  for (const m of CHAT.messages) {
+    const name = S.names.get(m.user_id) || (m.user_id === S.uid ? (S.meName || 'You') : 'Teammate');
+    const time = new Date(m.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    box.append(h('div', { style: 'display:flex;gap:8px;align-items:flex-start' },
+      h('span', { class: 'avatar', style: 'width:28px;height:28px;font-size:13px;flex:none', text: name.slice(0,1).toUpperCase() }),
+      h('div', { style: 'min-width:0' },
+        h('div', { style: 'display:flex;gap:6px;align-items:baseline' },
+          h('b', { text: name }),
+          h('span', { class: 'w-sub', style: 'font-size:11px', text: time })),
+        h('div', { text: m.content, style: 'white-space:pre-wrap;word-break:break-word' }))));
+  }
+  box.scrollTop = box.scrollHeight;
+}
+
+async function sendMessage() {
+  const inp = $('#chatInput'); if (!inp || !CHAT.channel) return;
+  const text = inp.value.trim(); if (!text) return;
+  inp.value = '';
+  const { error } = await SB.from('messages').insert({ channel_id: CHAT.channel, user_id: S.uid, content: text });
+  if (error) { toast("Couldn't send: " + error.message); return; }
+  await loadMessages(CHAT.channel);
+  renderMessages();
+}
+
+async function createChannelPrompt() {
+  const name = prompt('Channel name (e.g. clients, delegates, general)');
+  if (!name || !name.trim()) return;
+  const clean = name.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '-').replace(/-+/g, '-').slice(0, 40);
+  const { error } = await SB.from('channels').insert({ workspace_id: W, name: clean, created_by: S.uid });
+  if (error) { toast("Couldn't create channel: " + error.message); return; }
+  await loadChannels();
+  renderChatModal();
 }
 
 async function boot() {
@@ -6609,6 +6741,57 @@ async function boot() {
   subscribeLive();
   await loadDragon(); startDragon();
   if (new URLSearchParams(location.search).get('paid')) { history.replaceState(null, '', location.pathname + location.hash); toast('Thanks! Your payment is waiting for confirmation.'); }
+}
+
+
+/* ================= Copy content to another workspace ================= */
+async function copyToWorkspace() {
+  if (!SELB.size) return toast('Select some blocks first');
+  const blocks = topSel().map(id => blockById(id)).filter(Boolean).map(b => reid(b));
+  if (!blocks.length) return;
+  await showWorkspacePicker('Copy ' + blocks.length + ' block' + (blocks.length === 1 ? '' : 's') + ' to…', async (wsId) => {
+    const page = { title: 'Copied blocks', icon: '📋', blocks, wide: false };
+    await createPageInWorkspace(wsId, page);
+  });
+}
+
+async function copyPageToWorkspace(scope, id) {
+  const p = S.pages[scope] && S.pages[scope].get(id);
+  if (!p) return;
+  const clone = JSON.parse(JSON.stringify(p));
+  delete clone.id; delete clone.parent; delete clone.updatedAt; delete clone.updatedBy;
+  clone.title = (clone.title || 'Untitled') + ' (copy)';
+  await showWorkspacePicker('Copy page to…', async (wsId) => {
+    await createPageInWorkspace(wsId, clone);
+  });
+}
+
+function showWorkspacePicker(title, onPick) {
+  const list = h('div', { style: 'display:grid;gap:6px;max-height:50vh;overflow-y:auto' });
+  const others = (S.wsList || []).filter(w => w.id !== W);
+  if (!others.length) {
+    list.append(h('p', { class: 'w-sub', text: 'You only have one workspace. Create another from Team & plan first.' }));
+  } else {
+    for (const w of others) {
+      list.append(h('button', { class: 'side-btn', style: 'width:100%', onclick: async () => {
+        closeModal();
+        try { await onPick(w.id); toast('Copied to ' + w.name); }
+        catch (e) { toast('Copy failed: ' + (e.message || e)); }
+      } },
+        h('span', { class: 'ws-ico', style: 'width:28px;height:28px;font-size:15px', text: w.icon || '🐣' }),
+        h('span', { text: w.name })));
+    }
+  }
+  openModal(title, list);
+}
+
+async function createPageInWorkspace(wsId, pageObj) {
+  const newId = uid('pg');
+  const body = { ...pageObj, id: newId, createdBy: S.uid };
+  const row = { workspace_id: wsId, id: newId, scope: 'shared', owner_id: S.uid, body, updated_by: S.uid, updated_at: new Date().toISOString() };
+  const { error } = await SB.from('pages').insert(row);
+  if (error) throw error;
+  return newId;
 }
 
 /* ================= selecting many blocks, and undo ================= */
@@ -6657,7 +6840,8 @@ function renderSelBar() {
   if (!bar) { bar = h('div', { id: 'selBar', class: 'sel-bar', role: 'toolbar', 'aria-label': 'Selected blocks' }); document.body.append(bar); }
   bar.replaceChildren(
     h('b', { text: `${n} block${n === 1 ? '' : 's'} selected` }),
-    h('button', { class: 'pill-btn', onclick: () => copySel(false) }, 'Copy'),
+    h('button', { class: 'pill-btn', onclick: () => copySel(false), style: 'font-weight:700' }, 'Copy'),
+    h('button', { class: 'pill-btn', onclick: copyToWorkspace, title: 'Copy selected blocks to another workspace', style: 'background:var(--accent-soft);font-weight:700' }, '→ Other workspace'),
     S.ro ? '' : h('button', { class: 'pill-btn', onclick: duplicateSel }, 'Duplicate'),
     S.ro ? '' : h('button', { class: 'pill-btn danger', onclick: deleteSel }, '🗑 Delete'),
     h('button', { class: 'mini-x', style: 'opacity:1', 'aria-label': 'Clear selection', title: 'Clear selection (Esc)', onclick: clearSel }, '×'));
@@ -6829,15 +7013,24 @@ function drawRubber() {
 }
 
 function bindSelection() {
-  // Start a selection box from the page margins or the empty space under the blocks.
+  // Start a selection box by dragging on the page (margins, gutters, or non-editing areas).
+  // Tip: click and drag in the empty space left of the blocks, or hold Shift and drag.
   $('#main').addEventListener('pointerdown', e => {
     if (e.button !== 0 || e.pointerType === 'touch' || !cur()) return;
     const t = e.target;
-    if (!t.closest('#page') || t.closest('.bc, .bh, button, a, input, select, textarea, [contenteditable="true"], .cover, .title, .page-tools, .tpl-row, .stk, .icon-wrap, .meta-line')) {
+    const inPage = t.closest('#page');
+    if (!inPage) {
       if (SELB.size && !t.closest('.sel-bar')) clearSel();
       return;
     }
-    if (t.closest('.col-add')) return;
+    // Don't start selection if the user is clicking an editable or a real control
+    const editable = t.closest('[contenteditable="true"]');
+    const control = t.closest('button, a, input, select, textarea, .cover, .title, .page-tools, .tpl-row, .stk, .icon-wrap, .meta-line, .col-add, .fmt, .pop, .bh-drag');
+    if (editable || control) {
+      if (SELB.size && !t.closest('.sel-bar')) clearSel();
+      return;
+    }
+    // Start rubber-band selection
     startRubber(e);
   });
   document.addEventListener('pointerdown', e => { if (SELB.size && !e.target.closest('#main, .sel-bar, .pop, #modal, .toast')) clearSel(); });
